@@ -23,6 +23,7 @@ while running:
         if event.type == pygame.QUIT:
             running = False
     screen.blit(background, (0, 0))
+   
     # Update the display
     pygame.display.flip()
 
