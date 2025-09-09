@@ -235,18 +235,18 @@ def tutorial_screen():
         draw_text("Tutorial", font_title, (255, 255, 255), screen,
                   WINDOW_SIZE[0]//2, box_y + 40)
 
-        # Draw current page lines (YNWA placeholders)
-        for item in pages[page_index]:
-                    if isinstance(item, str):
-                        draw_text(item, font_button, (255, 255, 255), screen, WINDOW_SIZE[0]//2, y)
-                    elif isinstance(item, tuple) and len(item) == 2:
-                        text, color = item
-                        draw_text(text, font_button, color, screen, WINDOW_SIZE[0]//2, y)
-                    else:
-                        # list of (text, color) segments
-                        draw_text_multi_color(item, font_button, screen, WINDOW_SIZE[0]//2, y)
+        # Draw current page lines supporting strings, (text,color) tuples, and lists of segments
         y = box_y + 120
-        y += 50
+        for item in pages[page_index]:
+            if isinstance(item, str):
+                draw_text(item, font_button, (255, 255, 255), screen, WINDOW_SIZE[0]//2, y)
+            elif isinstance(item, tuple) and len(item) == 2:
+                text, color = item
+                draw_text(text, font_button, color, screen, WINDOW_SIZE[0]//2, y)
+            else:
+                # list of (text, color) segments
+                draw_text_multi_color(item, font_button, screen, WINDOW_SIZE[0]//2, y)
+            y += 50
 
         # Page indicator
         draw_text(f"Page {page_index + 1} / {len(pages)}", font_button, (200, 200, 200), screen,
@@ -286,4 +286,3 @@ while True:
         tutorial_screen()
     elif current_scene == "credits":
         credits_screen()
-
