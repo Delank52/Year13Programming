@@ -200,8 +200,8 @@ def tutorial_screen():
     GREEN = (0,255,0)
     pages = [
         ["Welcome to the Air Traffic Controller Simulator", "Your Ultimate goal is to guide aircraft to and from the airport.", "Ensuring maximum aircraft safety at all times.","You will be able to do this by using the dedicated commands"],
-        ["You must first call upon a specific aircraft by using their unique identifer (Callsign)", [("An example of this may be:" ,WHITE),("BA0342" ,GREEN)], "YNWA"],
-        ["YNWA", "YNWA", "YNWA"],
+        ["To contact an aircraft you must follow these steps","You must first call upon a specific aircraft by using their unique identifer (Callsign)", [("An example of this may be:" ,WHITE),("BA0342" ,GREEN)],"You must then let the aircraft know what direction to head (Heading (0 to 360 degrees))", [("Something like this:" ,WHITE),("HDG180" ,GREEN)],"You must then let the aircraft know what speed to travel at", [("e.g" ,WHITE),("SPD250" ,GREEN)]],
+        ["Finally you must tell them the altitude they need to be at", [("As shown:" ,WHITE),("FL360" ,GREEN)], "You can then combine these 4 into one statement as shown", ("BA0342 HDG180 SPD250 FL360",GREEN),"If your statement is correct the aircraft will follow your instructions ASAP"],
         ["YNWA", "YNWA", "YNWA"],
         ["YNWA", "YNWA", "YNWA"],
         ["YNWA", "YNWA", "YNWA"],
