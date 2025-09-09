@@ -30,6 +30,19 @@ def draw_text(text, font, color, surface, x, y):
     surface.blit(text_obj, text_rect)
     return text_rect
 
+def draw_text_multi_color(segments, font, surface, center_x, center_y):
+    """Draw a single line with differently colored segments centered at (center_x, center_y).
+    segments: list of (text, (r,g,b)) tuples
+    """
+    widths = [font.size(txt)[0] for txt, _ in segments]
+    total_width = sum(widths)
+    x = center_x - total_width // 2
+    for (txt, color), w in zip(segments, widths):
+        surf = font.render(txt, True, color)
+        rect = surf.get_rect(midleft=(x, center_y))
+        surface.blit(surf, rect)
+        x += w
+
 class Button:
     def __init__(self, text, center, action):
         self.text = text
@@ -181,54 +194,82 @@ def credits_screen():
 # Tutorial Screen
 
 def tutorial_screen():
-    buttons = [Button("Back", (80, WINDOW_SIZE[1]-40), lambda: change_scene("menu"))]
+
+
+    WHITE = (255,255,255)
+    GREEN = (0,255,0)
+    pages = [
+        ["Welcome to the Air Traffic Controller Simulator", "Your Ultimate goal is to guide aircraft to and from the airport.", "Ensuring maximum aircraft safety at all times.","You will be able to do this by using the dedicated commands"],
+        ["You must first call upon a specific aircraft by using their unique identifer (Callsign)", [("An example of this may be:" ,WHITE),("BA0342" ,GREEN)], "YNWA"],
+        ["YNWA", "YNWA", "YNWA"],
+        ["YNWA", "YNWA", "YNWA"],
+        ["YNWA", "YNWA", "YNWA"],
+        ["YNWA", "YNWA", "YNWA"],
+    ]
+
+    page_index = 0
+
+    def acknowledge():
+        nonlocal page_index
+        if page_index < len(pages) - 1:
+            page_index += 1
+        else:
+            change_scene("menu")  # Finish returns to menu
+
+    back_btn = Button("Back", (80, WINDOW_SIZE[1]-40), lambda: change_scene("menu"))
 
     while current_scene == "tutorial":
         screen.blit(background_generic, (0, 0))
 
-        # Darkened Background
+        # Darkened background box
         box_width, box_height = 1100, 600
         box_x = (WINDOW_SIZE[0] - box_width) // 2
         box_y = (WINDOW_SIZE[1] - box_height) // 2
-        box_rect = pygame.Rect(box_x, box_y, box_width, box_height)
 
-        # Draw semi-transparent rectangle
-        s = pygame.Surface((box_width, box_height))  
-        s.set_alpha(180)  # 0 = fully transparent, 255 = opaque
-        s.fill((0, 0, 0))  # black background
+        s = pygame.Surface((box_width, box_height))
+        s.set_alpha(180)
+        s.fill((0, 0, 0))
         screen.blit(s, (box_x, box_y))
 
-        # Title 
-        draw_text("Tutorial", font_title, (255, 255, 255), screen, WINDOW_SIZE[0]//2, box_y + 40)
+        # Title
+        draw_text("Tutorial", font_title, (255, 255, 255), screen,
+                  WINDOW_SIZE[0]//2, box_y + 40)
 
-        # Tutorial text inside box 
-        draw_text("Welcome to the Air Traffic Control Simulator!", font_button, (255, 255, 255), screen, WINDOW_SIZE[0]//2, box_y + 120)
-        draw_text("Your goal is to guide aircraft to and from the airport,", font_button, (255, 255, 255), screen, WINDOW_SIZE[0]//2, box_y + 170)
-        draw_text("ensuring all aircraft stay safe at all times.", font_button, (255, 255, 255), screen, WINDOW_SIZE[0]//2, box_y + 220)
-        draw_text("You will be able to do this by using the dedicated commands", font_button, (255, 255, 255), screen, WINDOW_SIZE[0]//2, box_y + 270)
-        draw_text("You must first call on the aircraft by using their callsign e.g              ", font_button, (255, 255, 255), screen, WINDOW_SIZE[0]//2, box_y + 320)
-        draw_text("                                                                                             'BA0342'", font_button, (0, 255, 0), screen, WINDOW_SIZE[0]//2, box_y + 320)
-        draw_text("Then type out the heading you want the aircraft to follow e.g                ", font_button, (255, 255, 255), screen, WINDOW_SIZE[0]//2, box_y + 370)
-        draw_text("                                                                                               'HDG020'", font_button, (0, 255, 0), screen, WINDOW_SIZE[0]//2, box_y + 370)
-        draw_text("Then type out the speed you want the aircraft to travel at e.g               ", font_button, (255, 255, 255), screen, WINDOW_SIZE[0]//2, box_y + 420)
-        draw_text("                                                                                                'SPD250'", font_button, (0, 255, 0), screen, WINDOW_SIZE[0]//2, box_y + 420)
-        draw_text("Then type out the altitude you want the aircraft to travel at e.g               ", font_button, (255, 255, 255), screen, WINDOW_SIZE[0]//2, box_y + 470)
-        draw_text("                                                                                               'FL360'", font_button, (0, 255, 0), screen, WINDOW_SIZE[0]//2, box_y + 470)
-        draw_text("Now by combing these 4 you get                                                        ", font_button, (255, 255, 255), screen, WINDOW_SIZE[0]//2, box_y + 520)
-        draw_text("                                                   'BA0342 HDG020 SPD250 FL360'", font_button, (0, 255, 0), screen, WINDOW_SIZE[0]//2, box_y + 520)
-        # Draw buttons
-        for b in buttons:
-            b.draw(screen)
+        # Draw current page lines (YNWA placeholders)
+        for item in pages[page_index]:
+                    if isinstance(item, str):
+                        draw_text(item, font_button, (255, 255, 255), screen, WINDOW_SIZE[0]//2, y)
+                    elif isinstance(item, tuple) and len(item) == 2:
+                        text, color = item
+                        draw_text(text, font_button, color, screen, WINDOW_SIZE[0]//2, y)
+                    else:
+                        # list of (text, color) segments
+                        draw_text_multi_color(item, font_button, screen, WINDOW_SIZE[0]//2, y)
+        y = box_y + 120
+        y += 50
 
-        # Handle events 
+        # Page indicator
+        draw_text(f"Page {page_index + 1} / {len(pages)}", font_button, (200, 200, 200), screen,
+                  WINDOW_SIZE[0]//2, box_y + box_height - 90)
+
+        # Buttons
+        ack_text = "Acknowledge" if page_index < len(pages) - 1 else "Finish"
+        ack_btn = Button(ack_text, (box_x + box_width - 180, box_y + box_height - 40),
+                         acknowledge, width=220, height=50)
+
+        back_btn.draw(screen)
+        ack_btn.draw(screen)
+
+        # Events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 sys.exit()
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                for b in buttons:
-                    if b.is_clicked(event.pos):
-                        b.action()
+                if back_btn.is_clicked(event.pos):
+                    back_btn.action()
+                elif ack_btn.is_clicked(event.pos):
+                    acknowledge()
 
         pygame.display.flip()
         clock.tick(60)
