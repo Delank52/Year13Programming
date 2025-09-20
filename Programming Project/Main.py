@@ -1,3 +1,5 @@
+import time
+
 # --- Simulation Scene ---
 def simulation_screen():
     """Displays the blank radar simulation screen with airport at center and UI bars."""
@@ -5,8 +7,12 @@ def simulation_screen():
     # State variables for pause, command input
     paused = False
     command_text = ""
+    game_over = False
+    last_alert_time = 0
+    alert_cooldown = 3.0  # seconds between alert sounds
+    # --- Time scale for simulation speed ---
+    time_scale = 1.0
     # For text input cursor blink (optional, not required)
-    import time
     cursor_visible = True
     last_cursor_switch = time.time()
     cursor_interval = 0.5
@@ -26,7 +32,7 @@ def simulation_screen():
         paused = False
         simulation_screen()
 
-    zoom = 1.0
+    zoom = 0.2
     ZOOM_MIN = 0.2
     ZOOM_MAX = 2.0
     ZOOM_STEP = 0.1
@@ -41,7 +47,17 @@ def simulation_screen():
     aircrafts = []
     selected_aircraft = None
     spawn_timer = 0.0
-    next_spawn_time = random.uniform(9.0, 16.0)
+    difficulty = SETTINGS.get("difficulty", "Normal")
+    if difficulty == "Beginner":
+        next_spawn_time = random.uniform(28.0, 36.0)
+    elif difficulty == "Easy":
+        next_spawn_time = random.uniform(14.0, 20.0)
+    elif difficulty == "Normal":
+        next_spawn_time = random.uniform(9.0, 16.0)
+    elif difficulty == "Realistic":
+        next_spawn_time = random.uniform(5.0, 10.0)
+    else:
+        next_spawn_time = random.uniform(9.0, 16.0)
     approach_target = pygame.Vector2(WINDOW_SIZE[0] // 2, WINDOW_SIZE[1] // 2 - 20)
 
     screen_center = pygame.Vector2(WINDOW_SIZE[0] / 2, WINDOW_SIZE[1] / 2)
@@ -96,6 +112,7 @@ def simulation_screen():
             self.base_pick_radius = base_radius
             self.distance_to_target = (self.target - self.pos).length()
             self.range_nm = self.distance_to_target / PIXELS_PER_NM
+            self.conflict = False
 
         def update(self, dt, target):
             # Adjust heading gradually
@@ -144,7 +161,12 @@ def simulation_screen():
             screen_vec = transform_point(self.pos)
             pos = (int(screen_vec.x), int(screen_vec.y))
             halo_radius = max(10, int(self.base_pick_radius * zoom_level * 1.1))
-            halo_color = (255, 210, 40) if self.selected else (60, 160, 245)
+            if self.conflict:
+                halo_color = (255, 60, 60)
+            elif self.selected:
+                halo_color = (255, 210, 40)
+            else:
+                halo_color = (60, 160, 245)
             halo_alpha = 110 if not self.selected else 180
             halo = pygame.Surface((halo_radius * 2, halo_radius * 2), pygame.SRCALPHA)
             pygame.draw.circle(halo, (*halo_color, halo_alpha), (halo_radius, halo_radius), halo_radius)
@@ -186,6 +208,8 @@ def simulation_screen():
 
     def spawn_aircraft():
         nonlocal spawn_timer, next_spawn_time
+        if game_over:
+            return
         edge_name = random.choice(["left", "right", "top", "bottom"])
         if edge_name == "left":
             spawn_pos = screen_to_world((0.0, random.uniform(0.0, WINDOW_SIZE[1])))
@@ -203,11 +227,21 @@ def simulation_screen():
         aircrafts.append(aircraft)
         range_nm = ((pygame.Vector2(spawn_pos) - approach_target).length()) / PIXELS_PER_NM
         append_message(
-            "Tower",
+            callsign,
             f"{callsign} {ac_type} inbound {edge_name}, {speed} kts, {altitude} ft, {range_nm:.1f} NM",
         )
         spawn_timer = 0.0
-        next_spawn_time = random.uniform(9.0, 16.0)
+        difficulty = SETTINGS.get("difficulty", "Normal")
+        if difficulty == "Beginner":
+            next_spawn_time = random.uniform(28.0, 36.0)
+        elif difficulty == "Easy":
+            next_spawn_time = random.uniform(14.0, 20.0)
+        elif difficulty == "Normal":
+            next_spawn_time = random.uniform(9.0, 16.0)
+        elif difficulty == "Realistic":
+            next_spawn_time = random.uniform(5.0, 10.0)
+        else:
+            next_spawn_time = random.uniform(9.0, 16.0)
 
     def find_aircraft(callsign: str):
         callsign_upper = callsign.upper()
@@ -216,16 +250,52 @@ def simulation_screen():
                 return ac
         return None
 
+    # --- Runway entry points and headings ---
+    runway_entry_points = {}
+    runway_headings = {}
+
+    # Helper: check landing clearance
+    def check_landing_clearance(ac, entry_point, runway_heading):
+        if (ac.pos - entry_point).length() > 10:
+            return False, "Not at entry point"
+        diff = (ac.heading_deg - runway_heading + 540) % 360 - 180
+        if abs(diff) > 20:
+            return False, "Not aligned with runway"
+        if not (2000 <= ac.altitude_ft <= 3000):
+            return False, "Not at landing altitude (FL20–30)"
+        return True, "Clear to land"
+
     def process_command(command: str):
         tokens = command.strip().split()
         if len(tokens) < 4:
-            append_message("Tower", "Command rejected: require callsign + HDG + SPD + FL.")
+            append_message("Tower", "Message not transmitted, please try again.")
             return
 
         callsign = tokens[0]
         aircraft = find_aircraft(callsign)
         if not aircraft:
             append_message("Tower", f"Unknown aircraft {callsign}.")
+            return
+
+        # -- Landing clearance handling --
+        if len(tokens) >= 5 and tokens[1].upper() == "CLEARED" and tokens[2].upper() == "TO" and tokens[3].upper() == "LAND":
+            rw_label = tokens[4].upper().replace("RWY", "")
+            if rw_label not in runway_entry_points:
+                append_message("Tower", f"Runway {rw_label} not available")
+                return
+            entry_point = runway_entry_points[rw_label]
+            runway_heading = runway_headings.get(rw_label)
+            if not runway_heading:
+                append_message("Tower", f"No heading info for {rw_label}")
+                return
+            ok, reason = check_landing_clearance(aircraft, entry_point, runway_heading)
+            if ok:
+                append_message(aircraft.callsign, f"{aircraft.callsign} landing clearance acknowledged runway {rw_label}")
+                if aircraft in aircrafts:
+                    aircrafts.remove(aircraft)
+                    append_message(aircraft.callsign, f"{aircraft.callsign} landed successfully.")
+            else:
+                append_message("Tower", f"Landing clearance denied: {reason}")
             return
 
         heading = speed = altitude = None
@@ -240,7 +310,7 @@ def simulation_screen():
                     errors.append("Invalid heading")
             elif t.startswith("SPD") and len(t) > 3:
                 try:
-                    speed_val = max(40, min(400, int(t[3:]) ))
+                    speed_val = max(40, min(400, int(t[3:])))
                     speed = speed_val
                 except ValueError:
                     errors.append("Invalid speed")
@@ -269,9 +339,9 @@ def simulation_screen():
 
     # Font for chat log/messages
     chat_font = pygame.font.SysFont(FONT_NAME, 22)
-
+    nonlocal_last_alert_time = [0]  # wrap in list to allow mutation
     while current_scene == "start":
-        dt = clock.get_time() / 1000.0
+        dt = (clock.get_time() / 1000.0) * time_scale
         # Fill background (dark blue)
         screen.fill((0, 44, 66))
 
@@ -355,6 +425,42 @@ def simulation_screen():
 
         # Draw runways depending on airport
         airport = SETTINGS.get("Airport", "Heathrow")
+        # --- Helper for drawing entry points (red dots) ---
+        def draw_entry_points(center_point, length, heading_deg):
+            import math
+            # 5km in meters
+            entry_dist_m = 5000
+            entry_dist_px = entry_dist_m * PIXELS_PER_METER
+            # Get heading vector (runway direction)
+            rad = math.radians(heading_deg)
+            dx = math.sin(rad)
+            dy = -math.cos(rad)
+            half_len = length // 2
+            # World positions of runway thresholds
+            end1 = (center_point[0] + dx * half_len, center_point[1] + dy * half_len)
+            end2 = (center_point[0] - dx * half_len, center_point[1] - dy * half_len)
+            # Entry points: 5 km further away from each threshold along the runway heading
+            entry1 = (end1[0] + dx * entry_dist_px, end1[1] + dy * entry_dist_px)
+            entry2 = (end2[0] - dx * entry_dist_px, end2[1] - dy * entry_dist_px)
+            # Convert to screen
+            pos1 = transform_point(entry1)
+            pos2 = transform_point(entry2)
+            pygame.draw.circle(screen, (255,0,0), (int(pos1.x), int(pos1.y)), 5)
+            pygame.draw.circle(screen, (255,0,0), (int(pos2.x), int(pos2.y)), 5)
+        def get_entry_points(center_point, length, heading_deg):
+            import math
+            entry_dist_m = 5000
+            entry_dist_px = entry_dist_m * PIXELS_PER_METER
+            rad = math.radians(heading_deg)
+            dx = math.sin(rad)
+            dy = -math.cos(rad)
+            half_len = length // 2
+            end1 = (center_point[0] + dx * half_len, center_point[1] + dy * half_len)
+            end2 = (center_point[0] - dx * half_len, center_point[1] - dy * half_len)
+            entry1 = (end1[0] + dx * entry_dist_px, end1[1] + dy * entry_dist_px)
+            entry2 = (end2[0] - dx * entry_dist_px, end2[1] - dy * entry_dist_px)
+            return [pygame.Vector2(entry1), pygame.Vector2(entry2)]
+
         # London Heathrow: two parallel east-west runways (09L/27R and 09R/27L)
         if airport.lower() in ["heathrow", "london heathrow"]:
             heading = 90
@@ -364,13 +470,33 @@ def simulation_screen():
             upper_center = offset_perpendicular(center, heading, spacing)
             lower_center = offset_perpendicular(center, heading, -spacing)
             draw_runway(screen, upper_center, r_length, r_width, heading, "09L", "27R")
+            draw_entry_points(upper_center, r_length, heading)
+            points = get_entry_points(upper_center, r_length, heading)
+            # Assign entry points and headings
+            runway_entry_points["09L"] = points[0]
+            runway_headings["09L"] = 90
+            runway_entry_points["27R"] = points[1]
+            runway_headings["27R"] = 270
+
             draw_runway(screen, lower_center, r_length, r_width, heading, "09R", "27L")
+            draw_entry_points(lower_center, r_length, heading)
+            points2 = get_entry_points(lower_center, r_length, heading)
+            runway_entry_points["09R"] = points2[0]
+            runway_headings["09R"] = 90
+            runway_entry_points["27L"] = points2[1]
+            runway_headings["27L"] = 270
         # Glasgow: two NE-SW runways (05/23), slightly separated
         elif airport.lower() == "glasgow":
             heading = 50
             r_length = 250
             r_width = 12
             draw_runway(screen, center, r_length, r_width, heading, "05", "23")
+            draw_entry_points(center, r_length, heading)
+            points = get_entry_points(center, r_length, heading)
+            runway_entry_points["05"] = points[0]
+            runway_headings["05"] = 50
+            runway_entry_points["23"] = points[1]
+            runway_headings["23"] = 230
         # Los Angeles: two parallel west-east runways (25L/07R and 25R/07L)
         elif airport.lower() in ["los angeles", "lax"]:
             heading = 250
@@ -380,10 +506,49 @@ def simulation_screen():
             upper_center = offset_perpendicular(center, heading, spacing)
             lower_center = offset_perpendicular(center, heading, -spacing)
             draw_runway(screen, upper_center, r_length, r_width, heading, "25L", "07R")
+            draw_entry_points(upper_center, r_length, heading)
+            points = get_entry_points(upper_center, r_length, heading)
+            runway_entry_points["25L"] = points[0]
+            runway_headings["25L"] = 250
+            runway_entry_points["07R"] = points[1]
+            runway_headings["07R"] = 70
+
             draw_runway(screen, lower_center, r_length, r_width, heading, "25R", "07L")
+            draw_entry_points(lower_center, r_length, heading)
+            points2 = get_entry_points(lower_center, r_length, heading)
+            runway_entry_points["25R"] = points2[0]
+            runway_headings["25R"] = 250
+            runway_entry_points["07L"] = points2[1]
+            runway_headings["07L"] = 70
+
+        # --- Dynamic Scale Bar (right side of screen) ---
+        possible_scales = [1, 2, 4, 5, 10]  # candidate scales in NM
+        scale_nm = 1
+        for candidate in possible_scales:
+            scale_px = int(candidate * PIXELS_PER_NM * zoom)
+            if 60 < scale_px < 160:
+                if candidate > 1:
+                    scale_nm = candidate
+                break
+        scale_px = int(scale_nm * PIXELS_PER_NM * zoom)
+
+        bar_x = WINDOW_SIZE[0] - 120   # further left from right edge
+        bar_y_bottom = WINDOW_SIZE[1] - 100
+        bar_y_top = bar_y_bottom - scale_px
+
+        # Draw vertical line
+        pygame.draw.line(screen, (255, 255, 255), (bar_x, bar_y_bottom), (bar_x, bar_y_top), 4)
+        # End caps
+        pygame.draw.line(screen, (255, 255, 255), (bar_x - 12, bar_y_bottom), (bar_x + 12, bar_y_bottom), 3)
+        pygame.draw.line(screen, (255, 255, 255), (bar_x - 12, bar_y_top), (bar_x + 12, bar_y_top), 3)
+
+        # Label in NM
+        label = font_button.render(f"{scale_nm} NM", True, (255, 255, 255))
+        label_rect = label.get_rect(midleft=(bar_x + 20, (bar_y_bottom + bar_y_top)//2))
+        screen.blit(label, label_rect)
 
         removal_queue = []
-        if not paused:
+        if not paused and not game_over:
             spawn_timer += dt
             if spawn_timer >= next_spawn_time and len(aircrafts) < 10:
                 spawn_aircraft()
@@ -401,7 +566,7 @@ def simulation_screen():
                 if selected_aircraft is ac:
                     selected_aircraft = None
                 if outcome == "landed":
-                    append_message("Tower", f"{ac.callsign} landed successfully.")
+                    append_message(ac.callsign, f"{ac.callsign} landed successfully.")
         for ac in list(aircrafts):
             if not world_bounds.collidepoint(ac.pos.x, ac.pos.y):
                 aircrafts.remove(ac)
@@ -409,21 +574,96 @@ def simulation_screen():
                     ac.selected = False
                 if selected_aircraft is ac:
                     selected_aircraft = None
-                append_message("Tower", f"{ac.callsign} left airspace.")
+                append_message(ac.callsign, f"{ac.callsign} left airspace.")
                 continue
             ac.draw(screen, zoom, transform_point)
+
+        # --- Conflict detection ---
+        # Reset conflicts
+        for ac in aircrafts:
+            ac.conflict = False
+        any_conflict = False
+        for i in range(len(aircrafts)):
+            for j in range(i + 1, len(aircrafts)):
+                ac1, ac2 = aircrafts[i], aircrafts[j]
+                horiz_nm = (ac1.pos - ac2.pos).length() / PIXELS_PER_NM
+                alt_diff = abs(ac1.altitude_ft - ac2.altitude_ft)
+                if horiz_nm < 2.5 and alt_diff < 1000:
+                    ac1.conflict = True
+                    ac2.conflict = True
+                    any_conflict = True
+
+        # --- Halo overlap/game over detection ---
+        if not game_over:
+            for i in range(len(aircrafts)):
+                for j in range(i + 1, len(aircrafts)):
+                    ac1, ac2 = aircrafts[i], aircrafts[j]
+                    # Convert to screen space
+                    p1 = transform_point(ac1.pos)
+                    p2 = transform_point(ac2.pos)
+                    dist = (p1 - p2).length()
+                    r1 = max(10, int(ac1.base_pick_radius * zoom * 1.1))
+                    r2 = max(10, int(ac2.base_pick_radius * zoom * 1.1))
+                    if dist < (r1 + r2):
+                        game_over = True
+                        break
+                if game_over:
+                    break
 
         # --- Top Bar ---
         top_bar_height = 64
         pygame.draw.rect(screen, (0, 32, 48), (0, 0, WINDOW_SIZE[0], top_bar_height))
         pygame.draw.line(screen, (20, 80, 100), (0, top_bar_height), (WINDOW_SIZE[0], top_bar_height), 2)
+        # Draw conflict alert after top bar is drawn
+        if any_conflict:
+            conflict_text = font_title.render("CONFLICT ALERT", True, (255, 60, 60))
+            screen.blit(conflict_text, conflict_text.get_rect(center=(WINDOW_SIZE[0]//2, top_bar_height//2)))
+            # Secondary info line on the bar too, slightly lower
+            conflict_text2 = font_button.render("WARNING: Aircraft at risk of collision", True, (255, 180, 180))
+            screen.blit(conflict_text2, conflict_text2.get_rect(center=(WINDOW_SIZE[0]//2, top_bar_height//2 + 26)))
+            if CONFLICT_SOUND:
+                CONFLICT_SOUND.play()
+            if ALERT_SOUND:
+                now_time = time.time()
+                if now_time - last_alert_time >= alert_cooldown:
+                    ALERT_SOUND.play()
+                    last_alert_time = now_time
 
         # Top bar buttons (simple icons)
         icon_y = top_bar_height // 2
         icon_xs = [40, 110, 180]
         # Icon/text color (light yellow)
         icon_color = (255, 230, 0)
-        # --- Zoom icon REMOVED ---
+        # --- Fast-forward icon (double triangles) at icon_xs[0] ---
+        ff_center = (icon_xs[0], icon_y)
+        ff_size = 16
+        # Left triangle
+        pygame.draw.polygon(
+            screen,
+            icon_color,
+            [
+                (ff_center[0] - ff_size//2, ff_center[1] - ff_size//2),
+                (ff_center[0], ff_center[1]),
+                (ff_center[0] - ff_size//2, ff_center[1] + ff_size//2),
+            ]
+        )
+        # Right triangle
+        pygame.draw.polygon(
+            screen,
+            icon_color,
+            [
+                (ff_center[0], ff_center[1] - ff_size//2),
+                (ff_center[0] + ff_size//2, ff_center[1]),
+                (ff_center[0], ff_center[1] + ff_size//2),
+            ]
+        )
+        # Draw speed text (e.g., "1x", "2x", "4x") near icon
+        speed_str = f"{int(time_scale)}x"
+        speed_font = pygame.font.SysFont(FONT_NAME, 16, bold=True)
+        speed_surf = speed_font.render(speed_str, True, icon_color)
+        speed_rect = speed_surf.get_rect(midleft=(icon_xs[0] + 22, icon_y))
+        screen.blit(speed_surf, speed_rect)
+
         # Pause icon (2 bars)
         pygame.draw.rect(screen, icon_color, (icon_xs[1]-8, icon_y-14, 6, 28))
         pygame.draw.rect(screen, icon_color, (icon_xs[1]+8, icon_y-14, 6, 28))
@@ -547,6 +787,17 @@ def simulation_screen():
             for b in pause_menu_buttons:
                 b.draw(screen)
 
+        # Draw GAME OVER overlay if game_over
+        if game_over:
+            s = pygame.Surface(WINDOW_SIZE, pygame.SRCALPHA)
+            s.fill((0, 0, 0, 160))
+            screen.blit(s, (0, 0))
+            draw_text("FAILED. An aircraft(s) has crashed.", font_title, (255, 60, 60), screen, WINDOW_SIZE[0]//2, WINDOW_SIZE[1]//2 - 60)
+
+            # Draw Main Menu button centered below the message
+            gameover_menu_btn = Button("Main Menu", (WINDOW_SIZE[0]//2, WINDOW_SIZE[1]//2 + 40), lambda: change_scene("menu"), width=240, height=60)
+            gameover_menu_btn.draw(screen)
+
         # --- Event handling ---
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -564,8 +815,8 @@ def simulation_screen():
                     zoom = min(ZOOM_MAX, round(zoom + ZOOM_STEP, 2))
                     continue
 
-                # Only handle input if not paused
-                if not paused:
+                # Only handle input if not paused or game_over
+                if not paused and not game_over:
                     if event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
                         cmd = command_text.strip()
                         if cmd:
@@ -607,6 +858,11 @@ def simulation_screen():
                         if b.is_clicked((mx, my)):
                             b.activate()
                             break
+                elif game_over:
+                    # Define the game over menu button in the same way as drawn above
+                    gameover_menu_btn = Button("Main Menu", (WINDOW_SIZE[0]//2, WINDOW_SIZE[1]//2 + 40), lambda: change_scene("menu"), width=240, height=60)
+                    if gameover_menu_btn.is_clicked((mx, my)):
+                        gameover_menu_btn.activate()
                 else:
                     clicked_ac = None
                     for ac in reversed(aircrafts):
@@ -622,7 +878,18 @@ def simulation_screen():
                                 selected_aircraft.selected = False
                             clicked_ac.selected = True
                             selected_aircraft = clicked_ac
-                            append_message("Tower", f"{clicked_ac.callsign} selected.")
+                            append_message(clicked_ac.callsign, f"{clicked_ac.callsign} selected.")
+                        continue
+                    # Fast-forward icon click (detect click on icon_xs[0])
+                    ff_dist = math.hypot(mx - icon_xs[0], my - icon_y)
+                    if ff_dist <= 24:
+                        # Cycle time_scale between 1.0, 2.0, 4.0
+                        if time_scale == 1.0:
+                            time_scale = 2.0
+                        elif time_scale == 2.0:
+                            time_scale = 4.0
+                        else:
+                            time_scale = 1.0
                         continue
                     # Pause icon click
                     pause_dist = math.hypot(mx - icon_xs[1], my - icon_y)
@@ -689,14 +956,70 @@ def _load_button_sound():
                 print(f"Failed to load button sound '{name}': {exc}")
     return None
 
+def _load_conflict_sound():
+    if not _mixer_ready:
+        return None
+    candidates = [
+        "conflict.wav",
+        "conflict.ogg",
+        "conflict.mp3",
+        "conflict",
+    ]
+    for name in candidates:
+        path = Path(name)
+        if path.exists():
+            try:
+                return pygame.mixer.Sound(str(path))
+            except pygame.error as exc:
+                print(f"Failed to load conflict sound '{name}': {exc}")
+    return None
+
+def _load_alert_sound():
+    if not _mixer_ready:
+        return None
+    candidates = [
+        "alert.wav",
+        "alert.ogg",
+        "alert.mp3",
+        "alert",
+    ]
+    for name in candidates:
+        path = Path(name)
+        if path.exists():
+            try:
+                return pygame.mixer.Sound(str(path))
+            except pygame.error as exc:
+                print(f"Failed to load alert sound '{name}': {exc}")
+    return None
 
 BUTTON_SOUND = _load_button_sound()
+CONFLICT_SOUND = _load_conflict_sound()
+ALERT_SOUND = _load_alert_sound()   # <-- add this
+
+BUTTON_SOUND = _load_button_sound()
+CONFLICT_SOUND = _load_conflict_sound()
 
 
 def play_button_sound():
-    if BUTTON_SOUND:
-        BUTTON_SOUND.play()
-
+    if not BUTTON_SOUND:
+        print("No button sound loaded")
+        return
+    volume_setting = SETTINGS.get("master_volume", "Medium")
+    print("Volume setting:", volume_setting)
+    if volume_setting == "Off":
+        print("Muted")
+        return
+    elif volume_setting == "Low":
+        BUTTON_SOUND.set_volume(0.25)
+    elif volume_setting == "Medium":
+        BUTTON_SOUND.set_volume(0.6)
+    elif volume_setting == "High":
+        BUTTON_SOUND.set_volume(1.0)
+    else:
+        BUTTON_SOUND.set_volume(0.6)
+    print("Playing sound at volume", BUTTON_SOUND.get_volume())
+    BUTTON_SOUND.play()
+    
 
 def _load_aircraft_image():
     candidates = [
@@ -742,26 +1065,6 @@ def draw_text_multi_color(segments, font, surface, center_x, center_y):
         rect = surf.get_rect(midleft=(x, center_y))
         surface.blit(surf, rect)
         x += w
-
-class Button:
-    def __init__(self, text, center, action, play_sound=True):
-        self.text = text
-        self.center = center
-        self.action = action
-        self.rect = None
-        self.play_sound = play_sound
-
-    def draw(self, surface):
-        self.rect = draw_text(self.text, font_button, (255, 255, 255), surface, *self.center)
-
-    def is_clicked(self, pos):
-        return self.rect and self.rect.collidepoint(pos)
-
-    def activate(self):
-        if self.play_sound:
-            play_button_sound()
-        if self.action:
-            self.action()
 
 # --- Scene functions ---
 def main_menu():
@@ -1014,7 +1317,7 @@ def settings_screen():
         (panel_x + panel_w // 2, panel_y + 480),
         360,
         Airport,
-        selected_index=Airport.index(SETTINGS.get("Airport", "High")) if SETTINGS.get("Airport", "High") in Airport else 2,
+        selected_index=Airport.index(SETTINGS.get("Airport", "London Heathrow")) if SETTINGS.get("Airport", "London Heathrow") in Airport else 1,
         row_height=38,
     )
 
@@ -1033,7 +1336,11 @@ def settings_screen():
         dd_master_vol.index = vol_levels.index("Medium")
         dd_difficulty.index = difficulties.index("Normal")
         dd_gamemode.index = gamemodes.index("Air")
-        dd_airports.index = Airport.index("High")
+        dd_airports.index = Airport.index("London Heathrow")
+        SETTINGS["master_volume"] = "Medium"
+        SETTINGS["difficulty"] = "Normal"
+        SETTINGS["gamemode"] = "Air"
+        SETTINGS["Airport"] = "London Heathrow"
 
     apply_btn.action = apply_changes
     reset_btn.action = reset_defaults
