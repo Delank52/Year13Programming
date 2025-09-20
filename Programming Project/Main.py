@@ -32,20 +32,262 @@ def simulation_screen():
     ZOOM_STEP = 0.1
 
     base_radar_radius = (min(WINDOW_SIZE[0], WINDOW_SIZE[1]) / 2 - 60) * 0.75
+    # Approximate physical scale: 5000 m runway spans ~300 px on screen
+    METERS_PER_PIXEL = 5000 / 300
+    PIXELS_PER_METER = 1 / METERS_PER_PIXEL
+    PIXELS_PER_SECOND_PER_KNOT = 0.514444 * PIXELS_PER_METER
+    PIXELS_PER_NM = 1852 * PIXELS_PER_METER
+
+    aircrafts = []
+    selected_aircraft = None
+    spawn_timer = 0.0
+    next_spawn_time = random.uniform(9.0, 16.0)
+    approach_target = pygame.Vector2(WINDOW_SIZE[0] // 2, WINDOW_SIZE[1] // 2 - 20)
+
+    screen_center = pygame.Vector2(WINDOW_SIZE[0] / 2, WINDOW_SIZE[1] / 2)
+
+    def screen_to_world(point):
+        vec = pygame.Vector2(point)
+        return screen_center + (vec - screen_center) / max(zoom, 0.001)
+
+    max_view_factor = 1.0 / ZOOM_MIN
+    world_margin = 200
+    world_left_limit = screen_center.x - screen_center.x * max_view_factor
+    world_right_limit = screen_center.x + (WINDOW_SIZE[0] - screen_center.x) * max_view_factor
+    world_top_limit = screen_center.y - screen_center.y * max_view_factor
+    world_bottom_limit = screen_center.y + (WINDOW_SIZE[1] - screen_center.y) * max_view_factor
+    world_bounds = pygame.Rect(
+        world_left_limit - world_margin,
+        world_top_limit - world_margin,
+        (world_right_limit - world_left_limit) + 2 * world_margin,
+        (world_bottom_limit - world_top_limit) + 2 * world_margin,
+    )
+
+    aircraft_label_font = pygame.font.SysFont(FONT_NAME, 18)
+    airline_codes = ["BA", "QR", "LH", "EK", "AF", "DL", "VS", "QF", "KL", "TK"]
+    aircraft_types = ["A320-251NX", "B777-300ER", "A380-800", "B787-8", "A350-900", "A321-200", "A330-800", "A220-200"]
+
+    class Aircraft:
+        def __init__(self, position, target, callsign, aircraft_type, speed_knots, altitude_ft):
+            self.pos = pygame.Vector2(position)
+            self.target = pygame.Vector2(target)
+            self.callsign = callsign
+            self.aircraft_type = aircraft_type
+            self.speed_knots = float(speed_knots)
+            self.altitude_ft = float(altitude_ft)
+            self.selected = False
+            self.speed_px = self.speed_knots * PIXELS_PER_SECOND_PER_KNOT
+            direction_vec = (self.target - self.pos)
+            if direction_vec.length_squared() == 0:
+                direction_vec = pygame.Vector2(0, 1)
+            else:
+                direction_vec = direction_vec.normalize()
+            self.direction = direction_vec
+            self.heading_deg = (math.degrees(math.atan2(self.direction.x, -self.direction.y)) + 360) % 360
+
+            self.target_heading = self.heading_deg
+            self.target_speed = self.speed_knots
+            self.target_altitude = self.altitude_ft
+            self.turn_rate_deg = 2.5  # deg per second
+            self.accel_knots_per_s = 3.0
+            self.climb_rate_fps = 1500 / 60.0  # feet per second (~1500 fpm)
+
+            base_radius = max(AIRCRAFT_IMAGE.get_width(), AIRCRAFT_IMAGE.get_height()) / 2 + 8 if AIRCRAFT_IMAGE else 20
+            self.base_pick_radius = base_radius
+            self.distance_to_target = (self.target - self.pos).length()
+            self.range_nm = self.distance_to_target / PIXELS_PER_NM
+
+        def update(self, dt, target):
+            # Adjust heading gradually
+            heading_diff = (self.target_heading - self.heading_deg + 540) % 360 - 180
+            max_turn = self.turn_rate_deg * dt
+            if abs(heading_diff) > max_turn:
+                self.heading_deg = (self.heading_deg + max_turn * (1 if heading_diff > 0 else -1)) % 360
+            else:
+                self.heading_deg = self.target_heading % 360
+
+            rad = math.radians(self.heading_deg)
+            self.direction = pygame.Vector2(math.sin(rad), -math.cos(rad))
+
+            # Adjust speed gradually
+            speed_diff = self.target_speed - self.speed_knots
+            max_speed_change = self.accel_knots_per_s * dt
+            if abs(speed_diff) > max_speed_change:
+                self.speed_knots += max_speed_change * (1 if speed_diff > 0 else -1)
+            else:
+                self.speed_knots = self.target_speed
+            self.speed_px = self.speed_knots * PIXELS_PER_SECOND_PER_KNOT
+
+            # Adjust altitude gradually
+            alt_diff = self.target_altitude - self.altitude_ft
+            max_alt_change = self.climb_rate_fps * dt
+            if abs(alt_diff) > max_alt_change:
+                self.altitude_ft += max_alt_change * (1 if alt_diff > 0 else -1)
+            else:
+                self.altitude_ft = self.target_altitude
+
+            self.pos += self.direction * self.speed_px * dt
+            to_target = target - self.pos
+            self.distance_to_target = to_target.length()
+            self.range_nm = self.distance_to_target / PIXELS_PER_NM
+            return None
+
+        def apply_command(self, heading=None, speed=None, altitude=None):
+            if heading is not None:
+                self.target_heading = heading % 360
+            if speed is not None:
+                self.target_speed = float(speed)
+            if altitude is not None:
+                self.target_altitude = float(altitude)
+
+        def draw(self, surface, zoom_level, transform_point):
+            screen_vec = transform_point(self.pos)
+            pos = (int(screen_vec.x), int(screen_vec.y))
+            halo_radius = max(10, int(self.base_pick_radius * zoom_level * 1.1))
+            halo_color = (255, 210, 40) if self.selected else (60, 160, 245)
+            halo_alpha = 110 if not self.selected else 180
+            halo = pygame.Surface((halo_radius * 2, halo_radius * 2), pygame.SRCALPHA)
+            pygame.draw.circle(halo, (*halo_color, halo_alpha), (halo_radius, halo_radius), halo_radius)
+            surface.blit(halo, (pos[0] - halo_radius, pos[1] - halo_radius))
+
+            image_scale = max(0.3, min(1.5, zoom_level * 0.85))
+            if AIRCRAFT_IMAGE:
+                aircraft_sprite = pygame.transform.rotozoom(AIRCRAFT_IMAGE, self.heading_deg - 90, image_scale)
+                sprite_rect = aircraft_sprite.get_rect(center=pos)
+                surface.blit(aircraft_sprite, sprite_rect)
+            else:
+                marker_radius = max(6, int(12 * zoom_level))
+                color = (255, 215, 0) if self.selected else (200, 220, 255)
+                pygame.draw.circle(surface, color, pos, marker_radius)
+                pygame.draw.circle(surface, (255, 255, 255), pos, marker_radius, 2)
+
+            label = aircraft_label_font.render(self.callsign, True, (255, 255, 255))
+            label_rect = label.get_rect(midtop=(pos[0], pos[1] + int(14 * zoom_level)))
+            surface.blit(label, label_rect)
+
+        def contains_point(self, point, zoom_level, transform_point):
+            screen_vec = transform_point(self.pos)
+            radius = self.base_pick_radius * zoom_level
+            dx = point[0] - screen_vec.x
+            dy = point[1] - screen_vec.y
+            return dx * dx + dy * dy <= radius * radius
+
+        def info_lines(self):
+            return [
+                f"Callsign: {self.callsign}",
+                f"Type: {self.aircraft_type}",
+                f"Speed: {int(self.speed_knots)} kts",
+                f"Altitude: {int(self.altitude_ft)} ft",
+                f"Heading: {int(self.heading_deg)}° | Range: {self.range_nm:.1f} NM",
+            ]
+
+    def generate_callsign():
+        return f"{random.choice(airline_codes)}{random.randint(100, 999)}"
+
+    def spawn_aircraft():
+        nonlocal spawn_timer, next_spawn_time
+        edge_name = random.choice(["left", "right", "top", "bottom"])
+        if edge_name == "left":
+            spawn_pos = screen_to_world((0.0, random.uniform(0.0, WINDOW_SIZE[1])))
+        elif edge_name == "right":
+            spawn_pos = screen_to_world((float(WINDOW_SIZE[0]), random.uniform(0.0, WINDOW_SIZE[1])))
+        elif edge_name == "top":
+            spawn_pos = screen_to_world((random.uniform(0.0, WINDOW_SIZE[0]), 0.0))
+        else:
+            spawn_pos = screen_to_world((random.uniform(0.0, WINDOW_SIZE[0]), float(WINDOW_SIZE[1])))
+        callsign = generate_callsign()
+        ac_type = random.choice(aircraft_types)
+        speed = random.randint(160, 230)
+        altitude = random.randint(4200, 9500)
+        aircraft = Aircraft(spawn_pos, approach_target, callsign, ac_type, speed, altitude)
+        aircrafts.append(aircraft)
+        range_nm = ((pygame.Vector2(spawn_pos) - approach_target).length()) / PIXELS_PER_NM
+        append_message(
+            "Tower",
+            f"{callsign} {ac_type} inbound {edge_name}, {speed} kts, {altitude} ft, {range_nm:.1f} NM",
+        )
+        spawn_timer = 0.0
+        next_spawn_time = random.uniform(9.0, 16.0)
+
+    def find_aircraft(callsign: str):
+        callsign_upper = callsign.upper()
+        for ac in aircrafts:
+            if ac.callsign.upper() == callsign_upper:
+                return ac
+        return None
+
+    def process_command(command: str):
+        tokens = command.strip().split()
+        if len(tokens) < 4:
+            append_message("Tower", "Command rejected: require callsign + HDG + SPD + FL.")
+            return
+
+        callsign = tokens[0]
+        aircraft = find_aircraft(callsign)
+        if not aircraft:
+            append_message("Tower", f"Unknown aircraft {callsign}.")
+            return
+
+        heading = speed = altitude = None
+        errors = []
+        for tok in tokens[1:]:
+            t = tok.upper()
+            if t.startswith("HDG") and len(t) > 3:
+                try:
+                    heading_val = int(t[3:]) % 360
+                    heading = heading_val
+                except ValueError:
+                    errors.append("Invalid heading")
+            elif t.startswith("SPD") and len(t) > 3:
+                try:
+                    speed_val = max(40, min(400, int(t[3:]) ))
+                    speed = speed_val
+                except ValueError:
+                    errors.append("Invalid speed")
+            elif t.startswith("FL") and len(t) > 2:
+                try:
+                    altitude_val = int(t[2:]) * 100
+                    altitude = altitude_val
+                except ValueError:
+                    errors.append("Invalid altitude")
+            else:
+                errors.append(f"Unknown token {tok}")
+
+        if heading is None or speed is None or altitude is None:
+            if not errors:
+                errors.append("Missing HDG, SPD, or FL")
+
+        if errors:
+            append_message("Tower", "; ".join(errors))
+            return
+
+        aircraft.apply_command(heading=heading, speed=speed, altitude=altitude)
+        append_message(
+            aircraft.callsign,
+            f"Turning HDG {heading:03d}, speed {speed} kts, altitude {altitude} ft",
+        )
 
     # Font for chat log/messages
     chat_font = pygame.font.SysFont(FONT_NAME, 22)
 
     while current_scene == "start":
+        dt = clock.get_time() / 1000.0
         # Fill background (dark blue)
         screen.fill((0, 44, 66))
 
         # Radar circles (concentric)
         center = (WINDOW_SIZE[0] // 2, WINDOW_SIZE[1] // 2)
+        approach_target.update((screen_center.x, screen_center.y - 20))
         max_radius = max(40, int(base_radar_radius * zoom))
         circle_color = (40, 60, 80)
         circle_alpha = 150
         num_circles = 5
+        center_vec = pygame.Vector2(center)
+
+        def transform_point(world_point):
+            vec = pygame.Vector2(world_point)
+            return screen_center + (vec - screen_center) * zoom
+
         # Draw with alpha
         radar_surface = pygame.Surface(WINDOW_SIZE, pygame.SRCALPHA)
         for i in range(1, num_circles + 1):
@@ -57,17 +299,17 @@ def simulation_screen():
         screen.blit(radar_surface, (0, 0))
 
         # --- Draw runways ---
-        def draw_runway(surface, center, length, width, heading_deg, label1, label2, color=(180, 180, 180)):
+        def draw_runway(surface, center_point, length, width, heading_deg, label1, label2, color=(180, 180, 180)):
             """Draws a runway aligned with a true heading: 0° points north (up)."""
             rotation = 90 - heading_deg
 
-            # Runway body
-            surf = pygame.Surface((length, width), pygame.SRCALPHA)
-            pygame.draw.rect(surf, color, (0, 0, length, width))
-            pygame.draw.rect(surf, (255, 255, 255), (0, 0, length, width), 2)
-            rotated = pygame.transform.rotate(surf, rotation)
-            rect = rotated.get_rect(center=center)
-            surface.blit(rotated, rect.topleft)
+            base_surface = pygame.Surface((length, width), pygame.SRCALPHA)
+            pygame.draw.rect(base_surface, color, (0, 0, length, width))
+            pygame.draw.rect(base_surface, (255, 255, 255), (0, 0, length, width), 2)
+            runway_sprite = pygame.transform.rotozoom(base_surface, rotation, zoom)
+            center_screen = transform_point(center_point)
+            rect = runway_sprite.get_rect(center=(int(center_screen.x), int(center_screen.y)))
+            surface.blit(runway_sprite, rect.topleft)
 
             import math
 
@@ -79,10 +321,10 @@ def simulation_screen():
             half_len = length // 2
 
             # Threshold positions
-            end1 = (center[0] + dx * half_len, center[1] + dy * half_len)
-            end2 = (center[0] - dx * half_len, center[1] - dy * half_len)
+            end1 = (center_point[0] + dx * half_len, center_point[1] + dy * half_len)
+            end2 = (center_point[0] - dx * half_len, center_point[1] - dy * half_len)
 
-            offset = max(24, 40 * zoom)
+            offset = 40
             pos1 = (end1[0] + dx * offset, end1[1] + dy * offset)
             pos2 = (end2[0] - dx * offset, end2[1] - dy * offset)
 
@@ -90,8 +332,9 @@ def simulation_screen():
 
             def draw_label(text, pos, heading):
                 text_surf = label_font.render(text, True, (255, 255, 255))
-                text_rot = pygame.transform.rotate(text_surf, rotation)
-                text_rect = text_rot.get_rect(center=(int(pos[0]), int(pos[1])))
+                text_rot = pygame.transform.rotozoom(text_surf, rotation, zoom)
+                pos_screen = transform_point(pos)
+                text_rect = text_rot.get_rect(center=(int(pos_screen.x), int(pos_screen.y)))
                 surface.blit(text_rot, text_rect)
 
             draw_label(label1, pos1, heading_deg)
@@ -115,9 +358,9 @@ def simulation_screen():
         # London Heathrow: two parallel east-west runways (09L/27R and 09R/27L)
         if airport.lower() in ["heathrow", "london heathrow"]:
             heading = 90
-            r_length = int(260 * zoom)
-            r_width = max(8, int(14 * zoom))
-            spacing = 48 * zoom
+            r_length = 300
+            r_width = 14
+            spacing = 48
             upper_center = offset_perpendicular(center, heading, spacing)
             lower_center = offset_perpendicular(center, heading, -spacing)
             draw_runway(screen, upper_center, r_length, r_width, heading, "09L", "27R")
@@ -125,19 +368,50 @@ def simulation_screen():
         # Glasgow: two NE-SW runways (05/23), slightly separated
         elif airport.lower() == "glasgow":
             heading = 50
-            r_length = int(220 * zoom)
-            r_width = max(8, int(12 * zoom))
+            r_length = 250
+            r_width = 12
             draw_runway(screen, center, r_length, r_width, heading, "05", "23")
         # Los Angeles: two parallel west-east runways (25L/07R and 25R/07L)
         elif airport.lower() in ["los angeles", "lax"]:
             heading = 250
-            r_length = int(300 * zoom)
-            r_width = max(8, int(16 * zoom))
-            spacing = 56 * zoom
+            r_length = 320
+            r_width = 16
+            spacing = 56
             upper_center = offset_perpendicular(center, heading, spacing)
             lower_center = offset_perpendicular(center, heading, -spacing)
             draw_runway(screen, upper_center, r_length, r_width, heading, "25L", "07R")
             draw_runway(screen, lower_center, r_length, r_width, heading, "25R", "07L")
+
+        removal_queue = []
+        if not paused:
+            spawn_timer += dt
+            if spawn_timer >= next_spawn_time and len(aircrafts) < 10:
+                spawn_aircraft()
+            for ac in list(aircrafts):
+                outcome = ac.update(dt, approach_target)
+                if outcome:
+                    removal_queue.append((ac, outcome))
+
+        if removal_queue:
+            for ac, outcome in removal_queue:
+                if ac in aircrafts:
+                    aircrafts.remove(ac)
+                if ac.selected:
+                    ac.selected = False
+                if selected_aircraft is ac:
+                    selected_aircraft = None
+                if outcome == "landed":
+                    append_message("Tower", f"{ac.callsign} landed successfully.")
+        for ac in list(aircrafts):
+            if not world_bounds.collidepoint(ac.pos.x, ac.pos.y):
+                aircrafts.remove(ac)
+                if ac.selected:
+                    ac.selected = False
+                if selected_aircraft is ac:
+                    selected_aircraft = None
+                append_message("Tower", f"{ac.callsign} left airspace.")
+                continue
+            ac.draw(screen, zoom, transform_point)
 
         # --- Top Bar ---
         top_bar_height = 64
@@ -163,6 +437,34 @@ def simulation_screen():
         label_surf = font_title.render(label_text, True, icon_color)
         label_rect = label_surf.get_rect(topright=(WINDOW_SIZE[0] - 32, 12))
         screen.blit(label_surf, label_rect)
+
+        info_panel = pygame.Rect(WINDOW_SIZE[0] - 260, top_bar_height + 72, 228, 300)
+        info_surface = pygame.Surface((info_panel.width, info_panel.height), pygame.SRCALPHA)
+        info_surface.fill((0, 0, 0, 150))
+        screen.blit(info_surface, info_panel.topleft)
+
+        traffic_title = font_button.render("Traffic", True, icon_color)
+        screen.blit(traffic_title, (info_panel.left + 12, info_panel.top + 12))
+
+        list_y = info_panel.top + 56
+        for ac in sorted(aircrafts, key=lambda a: a.distance_to_target)[:4]:
+            text = f"{ac.callsign:<6} {ac.range_nm:>4.1f} NM"
+            traffic_line = aircraft_label_font.render(text, True, (255, 255, 255))
+            screen.blit(traffic_line, (info_panel.left + 12, list_y))
+            list_y += 26
+
+        detail_y = info_panel.top + 150
+        if selected_aircraft:
+            detail_title = aircraft_label_font.render("Selected", True, icon_color)
+            screen.blit(detail_title, (info_panel.left + 12, detail_y))
+            detail_y += 24
+            for line in selected_aircraft.info_lines():
+                info_line = aircraft_label_font.render(line, True, (255, 255, 255))
+                screen.blit(info_line, (info_panel.left + 12, detail_y))
+                detail_y += 24
+        else:
+            hint = aircraft_label_font.render("Click aircraft", True, (200, 200, 200))
+            screen.blit(hint, (info_panel.left + 12, detail_y))
 
         # --- Chat/message log (top-left) ---
         now = time.time()
@@ -265,9 +567,10 @@ def simulation_screen():
                 # Only handle input if not paused
                 if not paused:
                     if event.key == pygame.K_RETURN or event.key == pygame.K_KP_ENTER:
-                        print(command_text)
-                        if command_text.strip():
-                            append_message("You", command_text)
+                        cmd = command_text.strip()
+                        if cmd:
+                            append_message("You", cmd)
+                            process_command(cmd)
                         command_text = ""
                     elif event.key == pygame.K_BACKSPACE:
                         command_text = command_text[:-1]
@@ -305,6 +608,22 @@ def simulation_screen():
                             b.activate()
                             break
                 else:
+                    clicked_ac = None
+                    for ac in reversed(aircrafts):
+                        if ac.contains_point((mx, my), zoom, transform_point):
+                            clicked_ac = ac
+                            break
+                    if clicked_ac:
+                        if selected_aircraft is clicked_ac:
+                            clicked_ac.selected = False
+                            selected_aircraft = None
+                        else:
+                            if selected_aircraft:
+                                selected_aircraft.selected = False
+                            clicked_ac.selected = True
+                            selected_aircraft = clicked_ac
+                            append_message("Tower", f"{clicked_ac.callsign} selected.")
+                        continue
                     # Pause icon click
                     pause_dist = math.hypot(mx - icon_xs[1], my - icon_y)
                     if pause_dist <= 24:
@@ -320,6 +639,7 @@ import pygame
 import sys
 import os
 import math
+import random
 import webbrowser
 from pathlib import Path
 
@@ -376,6 +696,31 @@ BUTTON_SOUND = _load_button_sound()
 def play_button_sound():
     if BUTTON_SOUND:
         BUTTON_SOUND.play()
+
+
+def _load_aircraft_image():
+    candidates = [
+        "aircraft.png",
+        "aircraft.webp",
+        "aircraft.jpg",
+        "aircraft",
+    ]
+    for name in candidates:
+        path = Path(name)
+        if path.exists():
+            try:
+                return pygame.image.load(str(path)).convert_alpha()
+            except pygame.error as exc:
+                print(f"Failed to load aircraft image '{name}': {exc}")
+    # Fallback simple diamond shape
+    surf = pygame.Surface((36, 36), pygame.SRCALPHA)
+    pygame.draw.polygon(surf, (180, 220, 255), [(18, 0), (35, 18), (18, 35), (1, 18)])
+    pygame.draw.line(surf, (255, 255, 255), (18, 4), (18, 20), 2)
+    pygame.draw.line(surf, (255, 255, 255), (6, 18), (30, 18), 2)
+    return surf
+
+
+AIRCRAFT_IMAGE = _load_aircraft_image()
 
 # --- Helper functions ---
 def draw_text(text, font, color, surface, x, y):
