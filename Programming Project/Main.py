@@ -1028,31 +1028,6 @@ def play_button_sound():
     print("Playing sound at volume", BUTTON_SOUND.get_volume())
     BUTTON_SOUND.play()
     
-
-def _load_aircraft_image():
-    candidates = [
-        "aircraft.png",
-        "aircraft.webp",
-        "aircraft.jpg",
-        "aircraft",
-    ]
-    for name in candidates:
-        path = Path(name)
-        if path.exists():
-            try:
-                return pygame.image.load(str(path)).convert_alpha()
-            except pygame.error as exc:
-                print(f"Failed to load aircraft image '{name}': {exc}")
-    # Fallback simple diamond shape
-    surf = pygame.Surface((36, 36), pygame.SRCALPHA)
-    pygame.draw.polygon(surf, (180, 220, 255), [(18, 0), (35, 18), (18, 35), (1, 18)])
-    pygame.draw.line(surf, (255, 255, 255), (18, 4), (18, 20), 2)
-    pygame.draw.line(surf, (255, 255, 255), (6, 18), (30, 18), 2)
-    return surf
-
-
-AIRCRAFT_IMAGE = _load_aircraft_image()
-
 # --- Helper functions ---
 def draw_text(text, font, color, surface, x, y):
     """Draw text centered at (x, y)."""
