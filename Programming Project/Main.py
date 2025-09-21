@@ -1,4 +1,39 @@
 import time
+import pygame
+import sys
+import os
+import math
+import random
+import webbrowser
+from pathlib import Path
+
+# Window and font
+WINDOW_SIZE = (1280, 832)
+FONT_NAME = "arial"
+FONT_SIZE_TITLE = 36
+FONT_SIZE_BUTTON = 28
+
+pygame.init()
+try:
+    pygame.mixer.init()
+    _mixer_ready = True
+except pygame.error as exc:
+    print(f"Audio init failed: {exc}")
+    _mixer_ready = False
+screen = pygame.display.set_mode(WINDOW_SIZE)
+pygame.display.set_caption("Air Traffic Controller Simulator")
+clock = pygame.time.Clock()
+
+font_title = pygame.font.SysFont(FONT_NAME, FONT_SIZE_TITLE)
+font_button = pygame.font.SysFont(FONT_NAME, FONT_SIZE_BUTTON)
+
+# Load background image 
+background_menu = pygame.image.load("background.png")
+background_menu = pygame.transform.scale(background_menu, WINDOW_SIZE)
+
+background_generic = pygame.image.load("background.png")
+background_generic = pygame.transform.scale(background_generic, WINDOW_SIZE)
+
 
 # --- Simulation Scene ---
 def simulation_screen():
@@ -276,6 +311,7 @@ def simulation_screen():
         if not aircraft:
             append_message("Tower", f"Unknown aircraft {callsign}.")
             return
+
 
         # -- Landing clearance handling --
         if len(tokens) >= 5 and tokens[1].upper() == "CLEARED" and tokens[2].upper() == "TO" and tokens[3].upper() == "LAND":
@@ -604,7 +640,8 @@ def simulation_screen():
                     dist = (p1 - p2).length()
                     r1 = max(10, int(ac1.base_pick_radius * zoom * 1.1))
                     r2 = max(10, int(ac2.base_pick_radius * zoom * 1.1))
-                    if dist < (r1 + r2):
+                    alt_diff = abs(ac1.altitude_ft - ac2.altitude_ft)
+                    if dist < (r1 + r2) and alt_diff < 1000:
                         game_over = True
                         break
                 if game_over:
@@ -657,8 +694,8 @@ def simulation_screen():
                 (ff_center[0], ff_center[1] + ff_size//2),
             ]
         )
-        # Draw speed text (e.g., "1x", "2x", "4x") near icon
-        speed_str = f"{int(time_scale)}x"
+        # Draw speed text (e.g., "0.5x", "1x", "2x", "4x", "8x") near icon
+        speed_str = f"{time_scale}x" if time_scale != int(time_scale) else f"{int(time_scale)}x"
         speed_font = pygame.font.SysFont(FONT_NAME, 16, bold=True)
         speed_surf = speed_font.render(speed_str, True, icon_color)
         speed_rect = speed_surf.get_rect(midleft=(icon_xs[0] + 22, icon_y))
@@ -883,13 +920,17 @@ def simulation_screen():
                     # Fast-forward icon click (detect click on icon_xs[0])
                     ff_dist = math.hypot(mx - icon_xs[0], my - icon_y)
                     if ff_dist <= 24:
-                        # Cycle time_scale between 1.0, 2.0, 4.0
-                        if time_scale == 1.0:
+                        # Cycle time_scale between 0.5x, 1x, 2x, 4x, 8x
+                        if time_scale == 0.5:
+                            time_scale = 1.0
+                        elif time_scale == 1.0:
                             time_scale = 2.0
                         elif time_scale == 2.0:
                             time_scale = 4.0
+                        elif time_scale == 4.0:
+                            time_scale = 8.0
                         else:
-                            time_scale = 1.0
+                            time_scale = 0.5
                         continue
                     # Pause icon click
                     pause_dist = math.hypot(mx - icon_xs[1], my - icon_y)
@@ -902,40 +943,7 @@ def simulation_screen():
 
         pygame.display.flip()
         clock.tick(60)
-import pygame
-import sys
-import os
-import math
-import random
-import webbrowser
-from pathlib import Path
 
-# Window and font
-WINDOW_SIZE = (1280, 832)
-FONT_NAME = "arial"
-FONT_SIZE_TITLE = 36
-FONT_SIZE_BUTTON = 28
-
-pygame.init()
-try:
-    pygame.mixer.init()
-    _mixer_ready = True
-except pygame.error as exc:
-    print(f"Audio init failed: {exc}")
-    _mixer_ready = False
-screen = pygame.display.set_mode(WINDOW_SIZE)
-pygame.display.set_caption("Air Traffic Controller Simulator")
-clock = pygame.time.Clock()
-
-font_title = pygame.font.SysFont(FONT_NAME, FONT_SIZE_TITLE)
-font_button = pygame.font.SysFont(FONT_NAME, FONT_SIZE_BUTTON)
-
-# Load background image 
-background_menu = pygame.image.load("background.png")
-background_menu = pygame.transform.scale(background_menu, WINDOW_SIZE)
-
-background_generic = pygame.image.load("background.png")
-background_generic = pygame.transform.scale(background_generic, WINDOW_SIZE)
 
 
 def _load_button_sound():
